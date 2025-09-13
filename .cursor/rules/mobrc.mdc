@@ -1,0 +1,181 @@
+---
+description: "index-tts-mnn 迁移规则：IndexTTS 端侧（Android + MNN）工程化与模型部署规范，覆盖导出、转换、前处理、推理、评测与交付。"
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+## index-tts-mnn 迁移规则（Rule）
+
+本规则文件用于指导将 `index-tts` 推理管线迁移为可在移动端（Android）离线运行的 MNN 版本，整体思路与目录规范参考 `Bert-VITS2-MNN` 对 `Bert-VITS2` 的迁移方式。目标产物为可在手机上运行的 APK，核心模型以 `.mnn` 文件形式随工程打包，端侧完成全流程文本到语音推理。
+
+### 1. 范围与目标
+- **范围**：将 `index-tts` 的推理依赖（GPT-样式声学模型、语音码本解码器 BigVGAN2、条件编码器 Conformer、DVAE/VQ 模块、分词与前处理）迁移至 Android 端，基于 `MNN` 完成端侧推理。
+- **目标**：
+  - 提供 `index-tts-mnn` Android 工程，完成纯离线推理。
+  - 端侧替换 Python 依赖：分词/标点停顿/拼音校正等文本预处理由 Kotlin/NDK 侧实现；分词与 BPE Tokenizer 使用 C/C++ 实现。
+  - 以 `.onnx → .mnn` 的方式部署全部涉及的子模型，并提供量化与性能配置建议。
+
+### 2. 目录结构（建议）
+```
+index-tts-mnn/
+  ├─ app/
+  │  └─ src/main/
+  │     ├─ assets/                # *.mnn 模型、词典、BPE词表、前后处理资源
+  │     ├─ java/preprocess/       # 文本预处理（Kotlin）：标点控制、拼音纠错、停顿注入
+  │     └─ java/tts/              # 端侧推理流水线封装（ViewModel/Service）
+  ├─ indextts/                    # IndexTTS 各组件的 MNN 端推理实现（C++/JNI）
+  ├─ cpptokenizer/                # BPE/Unigram tokenizer C++ 封装及 JNI
+  ├─ third_party/
+  │  ├─ MNN/                      # 仅头文件（或子模块）
+  │  └─ tokenizers-cpp/           # 仅头文件，如需自编译可替换静态库
+  ├─ tools/                        # 导出与转换脚本（ONNX、校验、打包）
+  ├─ CMakeLists.txt
+  ├─ build.gradle / settings.gradle
+  └─ RULES.md                     # 本文件
+```
+
+说明：
+- 参考 `Bert-VITS2-MNN`，`third_party/` 默认仅提供头文件，若需替换静态库，请在对应 JNI CMake 中链接。
+- `assets/` 放置：`config.yaml`（必要字段裁剪版）、`bpe.model`、`unigram_12000.vocab`（如需）、以及各子模型的 `.mnn` 文件。
+
+### 3. 模型切分与导出（ONNX → MNN）
+结合 `index-tts` 的发布清单，建议最小化端侧依赖并进行模块化导出：
+- GPT-样式声学模型（`gpt.pth`）
+- DVAE（`dvae.pth`）或相应编码器/解码器子图
+- BigVGAN2 生成器（`bigvgan_generator.pth`）
+- 条件编码器（Conformer 等，如在 `infer.py` 内耦合，需剥离）
+- 可能的特征前处理（如梅尔谱参数常量，避免端上计算重复性可直接在端计算）
+
+导出步骤（建议在 `tools/` 提供对齐脚本）：
+1) 复用/仿照 `index-tts` 原仓导出逻辑，编写 `export_onnx_*.py`：
+   - 固定随机种子，切为推理模式，移除训练专用分支。
+   - 明确输入/输出张量维度，采用动态轴仅在必要处（如 T 维）。
+   - 输出 ONNX opset ≥ 13（实测与 MNN 兼容性较好）。
+2) 使用 MNNConvert 转换：
+   - `MNNConvert -f ONNX --modelFile xxx.onnx --MNNModel xxx.mnn --bizCode MNN`。
+   - 记录每个子图的输入形状范围，以便端上设置 `Resize`/`Config`。
+3) 可选量化：
+   - 优先尝试 `weight quant (INT8)` 对大矩阵乘子图（GPT/Conformer），确保精度可接受。
+   - BigVGAN2 对感知质量更敏感，建议保持 FP16（或不量化），使用 FP16/FP32 混精策略。
+
+### 4. 文本前处理规则（端侧实现）
+- 目标一致性：端侧前处理需与 `index-tts` Python 版本的分词、BPE、拼音注入/纠错、停顿控制严格对齐，确保声学模型条件一致。
+- 建议：
+  - 使用 `tokenizers-cpp`/自研 BPE 实现 `bpe.model`、`unigram_12000.vocab` 的加载与子词分解；
+  - 中文场景的拼音纠错/字-拼双通道编码，需复刻论文/仓库对应逻辑；
+  - 停顿控制：在文本到 token 的过程中识别标点，插入时长/停顿标记（与原仓一致的特殊 token 编码）。
+- 输出：提供面向 C++ 的 `TextProcessor`（JNI 暴露到 Kotlin），返回模型期望的 token 序列、长度 mask、停顿标记等。
+
+### 5. 端侧推理流水线（参考 BV2-MNN）
+端侧整体流程：
+```
+文本 → 分词/BPE/拼音与停顿 → 条件编码器（Conformer.mnn）
+     → GPT-声学模型（gpt.mnn）→ 编码/码本 / DVAE（dvae.mnn）
+     → BigVGAN2 生成器（bigvgan_generator.mnn）→ waveform(.wav)
+```
+实施要点：
+- 使用 C++ 封装 `Session`/`Interpreter`，对每个子模型建立独立 `MNN::Interpreter` 与 `MNN::Session`，按顺序喂入/取出张量。
+- 对动态长度输入（T 维）在运行前 `resizeTensor`；
+- 统一内存格式（NCHW/NC/NTC），必要时在导出阶段约定；
+- Kotlin 层仅协调资源加载与音频落盘（`WAV` 写入器）。
+
+### 6. 资源与配置
+- `assets/` 内文件：
+  - `config.yaml`（仅保留端侧必要字段，如采样率、码本维度、tokenizer 配置、停顿标记映射等）；
+  - `*.mnn`：`gpt.mnn`、`conformer.mnn`、`dvae.mnn`、`bigvgan_generator.mnn`；
+  - 词表/模型：`bpe.model`、`unigram_12000.vocab`；
+  - 其他：拼音词典、映射表等。
+- Git LFS：跟随 `Bert-VITS2-MNN` 规则，跟踪 `*.mnn`。
+
+### 7. 工程与构建
+- IDE：Android Studio 打开根目录，`./gradlew assembleRelease` 即可构建。
+- NDK/CMake：
+  - 在 `CMakeLists.txt` 链接 MNN、tokenizer 的静态/动态库；
+  - `minSdkVersion` ≥ 24（建议 24/26），`abiFilters` 至少 `arm64-v8a`；
+  - 打开 `-O3 -ffast-math`，MNN 后端可启用 `OpenCL`/`Vulkan` 按需选择。
+
+### 8. 蒸馏与轻量化（对应 BV2-MNN 的做法）
+- 若 `gpt.pth`/`conformer` 体量过大，参考 BV2-MNN：
+  - 以相同任务/损失，蒸馏至小模型（参数量目标：几十 MB 级）。
+  - 优先蒸馏前端条件编码器与 GPT 主干；
+  - 端侧 BigVGAN2 可保留较高容量，或选择轻量化变体（感知质量优先）。
+- 输出与原始模型保持接口一致，确保推理替换即可。
+
+### 9. 校验与一致性测试
+- 在 `tools/` 提供一致性校验脚本：
+  - 同一输入文本 + 参考音色，比较 Python 端与 MNN 端：中间表征统计（均值/方差/若干点位）与最终音频 SNR。
+  - 允许小量差异（浮点与量化误差），阈值可配置。
+
+### 10. 模型替换指引（自定义模型）
+1) 参考 `index-tts` 训练/发布说明，得到桌面端 `.pth`；
+2) 导出为 ONNX：使用 `tools/export_onnx_*.py`；
+3) MNN 转换：使用 `MNNConvert` 转 `.mnn`；
+4) 放入 `app/src/main/assets/`，如文件名有变化，修改 Kotlin 侧加载路径。
+
+### 11. 性能与内存建议
+- 首次加载持久化单例 `Interpreter`，复用 Session；
+- 对长文本分段合成并拼接，降低峰值显存；
+- 使用 FP16/混精优先于全 INT8，以保音质；
+- 允许在设置页切换后端（CPU/Vulkan），并暴露 `batch/frame size` 选项。
+
+### 12. 许可证与致谢
+- 继承与遵循 `index-tts` 原仓与依赖库的许可证；
+- 致谢：IndexTTS、MNN 以及 `Bert-VITS2-MNN` 的工程化思路参考。
+
+### 13. 交付物清单
+- 可编译的 Android 工程；
+- `tools/` 导出与转换脚本；
+- 示例 `assets/`（小体量公开样例）；
+- 端侧一致性测试脚本与说明。
+
+
+### 14. 分阶段开发计划（ONNX → MNN → Android）
+
+为降低实现风险并便于逐步验证，开发分为三阶段推进：
+
+- 阶段一：纯 ONNX 推理实现（桌面端）
+  - 目标：将 `index-tts` 中涉及的各子模型导出为 ONNX，并提供基于 ONNXRuntime 的推理脚本，实现端到端生成 `.wav`。
+  - 任务：
+    - 编写 `tools/export_onnx_*.py`，导出 GPT、Conformer（条件编码器）、DVAE/VQ、BigVGAN2 生成器等。
+    - 提供 `tools/onnx_infer.py`（或同等）统一加载与串联 ONNX 子图，完成功能等价的推理。
+    - 复刻文本前处理（Python 版），确保与原仓输出等价。
+  - 交付：
+    - `checkpoints_onnx/` 内的 `*.onnx`。
+    - 端到端 ONNX 推理脚本与使用说明（含示例输入输出）。
+  - 验收：
+    - 与原 `indextts/infer.py` 结果对齐，误差在设定阈值内；
+    - 生成 WAV 的主观可用性通过初步听感检查。
+
+- 阶段二：MNN 转换与端侧推理脚本（桌面端模拟）
+  - 目标：将阶段一的 ONNX 转换为 MNN（含 FP32/FP16/INT8 多精度版本），并基于 MNN 完成推理脚本构建与测试。
+  - 任务：
+    - 使用 `MNNConvert` 批量转换成 `*.mnn`，记录各模型输入尺寸与动态轴；
+    - 提供 `tools/mnn_infer.cpp/.py`（可选 Python MNN 前端或 C++）完成端到端推理复现；
+    - 进行精度与性能对比：FP32 基准 → FP16 → INT8；
+    - 客观评测：SNR、mel 相似度、WER（如适用）；主观评测：ABX 听感对比与 MOS 采样；
+    - 输出评测与性能报告（时延、内存、音质差异记录）。
+  - 交付：
+    - `checkpoints_mnn/` 内的 `*.mnn`（按精度组织子目录）。
+    - MNN 推理脚本与构建说明（若用 C++，提供 CMake 构建脚本）。
+  - 验收：
+    - 与 ONNX 推理结果对齐，误差在阈值内；
+    - 客观与主观评测通过（无明显劣化），并给出精度-性能权衡结论。
+
+- 阶段三：评测与 Android 工程实现
+  - 目标：在阶段二评测通过后，基于已确定的 `*.mnn` 模型与前处理策略，完成 Android 端完整工程（参考本规则与 `Bert-VITS2-MNN`）。
+  - 任务：
+    - 工程实现：按本规则第 2、5、6、7 节完成目录、JNI、资源与构建；
+    - 集成端侧文本前处理（Kotlin/NDK），接入 MNN 子图推理流水线；
+    - 提供 Demo 界面与一键合成流程；
+    - 输出用户指南与常见问题（性能、机型兼容、模型替换）。
+  - 交付：
+    - 可安装运行的 APK；
+    - `app/src/main/assets/` 资源齐备；
+    - 工程 README 与评测报告。
+  - 验收：
+    - 多机型运行稳定、无崩溃；
+    - 与阶段二的桌面端 MNN 推理结果一致；
+    - 性能达成目标（端侧延迟/内存/功耗可接受）。
+
+

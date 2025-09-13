@@ -1,0 +1,69 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual envs
+.env/
+.venv/
+venv/
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Build & dist
+build/
+dist/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+logs/
+*.log
+
+# Checkpoints & models (do not push)
+checkpoints/
+checkpoints_onnx/
+checkpoints_mnn/
+index-tts/checkpoints/
+index-tts/checkpoints_onnx/
+index-tts/checkpoints_mnn/
+**/*.pth
+**/*.pt
+**/*.bin
+**/*.onnx
+**/*.mnn
+**/*.npz
+**/*.npy
+**/*.ckpt
+
+# Assets: model/tokenizer resources (not scripts)
+index-tts/assets/
+app/src/main/assets/
+
+# Audio outputs
+**/*.wav
+**/*.mp3
+**/*.flac
+
+# Node / Android (if present)
+node_modules/
+android/.gradle/
+android/.cxx/
+android/build/
+app/build/
+
+# Ignore full external repos; keep only our scripts
+Bert-VITS2/
+Bert-VITS2-MNN/
+
+# Keep only export_onnx scripts from index-tts
+index-tts/*
+!index-tts/export_onnx/**
+!index-tts/README.md
+
+
