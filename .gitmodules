@@ -1,3 +1,6 @@
 [submodule "Bert-VITS2"]
 	path = Bert-VITS2
 	url = https://github.com/fishaudio/Bert-VITS2
+[submodule "Bert-VITS2-MNN"]
+	path = Bert-VITS2-MNN
+	url = https://github.com/Voine/Bert-VITS2-MNN
