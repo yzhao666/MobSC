@@ -17,48 +17,20 @@ except Exception:
 
 
 def load_conformer_model(ckpt_path: str, config_path: str, device: torch.device) -> torch.nn.Module:
-    """从 GPT 模型中提取 Conformer 条件编码器"""
-    from omegaconf import OmegaConf
-    from indextts.gpt.model import UnifiedVoice
-    from indextts.utils.checkpoint import load_checkpoint
-    
-    # 加载配置
-    cfg = OmegaConf.load(config_path)
-    
-    # 创建完整的 GPT 模型
-    gpt_model = UnifiedVoice(**cfg.gpt)
-    
-    # 加载权重
-    load_checkpoint(gpt_model, ckpt_path)
-    
-    # 提取 Conformer 条件编码器
-    conformer_model = gpt_model.conditioning_encoder
-    
-    # 设置为评估模式并移动到设备
-    conformer_model = conformer_model.to(device)
-    conformer_model.eval()
-    
-    print(f">> Conformer 条件编码器提取完成: {ckpt_path}")
-    return conformer_model
+    # TODO: 替换为 indextts 条件编码器的真实装载逻辑
+    raise NotImplementedError("请根据 indextts 实际实现补齐 Conformer/Condition encoder 的装载逻辑")
 
 
-def build_dummy_inputs(device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
-    """构造 Conformer 模型的虚拟输入"""
-    # 根据 IndexTTS Conformer 的输入格式构造
-    # speech_conditioning_input: (batch, n_mels, frames) -> (batch, frames, n_mels)
-    # 根据配置文件：n_mels=100, 使用合理的时间维度
-    speech_conditioning_input = torch.randn(1, 200, 100, device=device).float()  # (batch, time, n_mels)
-    
-    # cond_mel_lengths: (batch,)
-    cond_mel_lengths = torch.tensor([200], device=device).long()
-    
-    return speech_conditioning_input, cond_mel_lengths
+def build_dummy_inputs(device: torch.device) -> Tuple[torch.Tensor]:
+    # 示例：梅尔谱特征或音频/特征序列等
+    feats = torch.randn(1, 80, 200, device=device)  # (B, C, T) 仅示例
+    return (feats,)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--ckpt", type=str, default="checkpoints/gpt.pth")
-    parser.add_argument("--config", type=str, default="checkpoints/config.yaml")
+    parser.add_argument("--ckpt", type=str, required=True)
+    parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--out", type=str, default="checkpoints_onnx/conformer.onnx",
                        help="Output ONNX model path (default: checkpoints_onnx/conformer.onnx)")
     parser.add_argument("--opset", type=int, default=13)
@@ -73,20 +45,18 @@ def main():
     model = load_conformer_model(args.ckpt, args.config, device)
     model.eval()
 
-    speech_conditioning_input, cond_mel_lengths = build_dummy_inputs(device)
+    (feats,) = build_dummy_inputs(device)
 
-    input_names = ["speech_conditioning_input", "cond_mel_lengths"]
-    output_names = ["cond_features", "mask"]
+    input_names = ["feats"]
+    output_names = ["cond_features"]
     dynamic_axes = {
-        "speech_conditioning_input": {0: "batch", 1: "time"},
-        "cond_mel_lengths": {0: "batch"},
+        "feats": {0: "batch", 2: "time"},
         "cond_features": {0: "batch", 1: "time"},
-        "mask": {0: "batch", 2: "time"},
     }
 
     torch.onnx.export(
         model,
-        (speech_conditioning_input, cond_mel_lengths),
+        (feats,),
         args.out,
         export_params=True,
         opset_version=args.opset,

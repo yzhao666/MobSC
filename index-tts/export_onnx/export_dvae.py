@@ -29,8 +29,8 @@ def build_dummy_inputs(device: torch.device) -> Tuple[torch.Tensor]:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--ckpt", type=str, default="checkpoints/dvae.pth")
-    parser.add_argument("--config", type=str, default="checkpoints/config.yaml")
+    parser.add_argument("--ckpt", type=str, required=True)
+    parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--out", type=str, default="checkpoints_onnx/dvae.onnx",
                        help="Output ONNX model path (default: checkpoints_onnx/dvae.onnx)")
     parser.add_argument("--opset", type=int, default=13)

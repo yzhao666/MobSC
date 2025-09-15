@@ -57,6 +57,10 @@ android/.cxx/
 android/build/
 app/build/
 
+# Ignore full external repos; keep only our scripts
+Bert-VITS2/
+Bert-VITS2-MNN/
+
 # Keep only export_onnx scripts from index-tts
 index-tts/*
 !index-tts/export_onnx/**
