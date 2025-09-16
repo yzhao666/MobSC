@@ -61,9 +61,8 @@ app/build/
 Bert-VITS2/
 Bert-VITS2-MNN/
 
-# Keep only export_onnx scripts from index-tts
-index-tts/*
-!index-tts/export_onnx/**
-!index-tts/README.md
-
+# # Keep only export_onnx scripts from index-tts
+# index-tts/*
+# !index-tts/export_onnx/**
+# !index-tts/README.md
 
