@@ -5,16 +5,16 @@ MobSC 是一个将 IndexTTS 语音合成系统迁移到移动端（Android）的
 
 ## 最新进展 (2024年9月17日)
 
-### ✅ 重大突破：ONNX 子模块化导出完成
+### ✅ 阶段性成果：GPT/Conformer 的 ONNX 子模块化导出完成（BigVGAN/DVAE 待完成）
 
 #### 问题解决
-- **ONNX 2GB 限制问题**：成功将大型 GPT 模型（1GB+）拆分为 4 个独立子模块
-- **外部数据文件问题**：每个 ONNX 文件都是独立的，无外部依赖
-- **精度验证体系**：建立了完整的 PyTorch vs ONNX 精度对比测试
+- **ONNX 2GB 限制问题**：成功将大型 GPT 模型（1GB+）拆分为 4 个独立子模块（文本嵌入、GPT 核心、LM 头、Conformer）
+- **外部数据文件问题**：已导出的 ONNX 文件均为单文件，无外部依赖
+- **精度验证体系**：为已导出的子模块建立了完整的 PyTorch vs ONNX 精度对比测试
 
-#### 技术成果
+#### 技术成果（已完成部分）
 
-##### 1. 子模块导出架构
+##### 1. 子模块导出架构（已完成）
 ```
 IndexTTS GPT 模型 → 4个子模块
 ├── text_embed.onnx (62M)    - 文本嵌入 + 位置编码
@@ -23,15 +23,15 @@ IndexTTS GPT 模型 → 4个子模块
 └── conformer.onnx (156M)    - 条件编码器
 ```
 
-##### 2. 精度验证结果
+##### 2. 精度验证结果（已完成）
 | 模块 | 文件大小 | 精度等级 | 最大差异 | 状态 |
 |------|----------|----------|----------|------|
 | text_embed | 62M | 优秀 | 0.00e+00 | ✅ 完美 |
-| gpt_core | 1.8G | 良好 | 4.29e-05 | ✅ 优秀 |
+| gpt_core | 1.8G | 良好 | 4.29e-05 | ✅ 通过 |
 | lm_head | 41M | 优秀 | 8.11e-06 | ✅ 完美 |
 | conformer | 156M | 一般 | 7.46e-04 | ✅ 可接受 |
 
-##### 3. 新增脚本文件
+##### 3. 新增脚本文件（已提交）
 **导出脚本：**
 - `export_text_embed.py` - 文本嵌入器导出
 - `export_gpt_core.py` - GPT 核心导出  
@@ -57,37 +57,39 @@ IndexTTS GPT 模型 → 4个子模块
 
 ## 项目里程碑
 
-### 阶段一：ONNX 导出 ✅ 完成
+### 阶段一：ONNX 导出（进行中）
 - [x] 分析 IndexTTS 推理流程和模型结构
 - [x] 设计子模块划分策略
-- [x] 实现各子模块导出脚本
-- [x] 建立精度验证体系
-- [x] 解决 2GB 限制问题
+- [x] 实现 GPT/Conformer 子模块导出脚本（text_embed/gpt_core/lm_head/conformer）
+- [x] 建立 GPT/Conformer 的精度验证体系
+- [x] 解决 2GB 限制问题（通过子模块化与单文件导出）
+- [ ] 实现 BigVGAN 生成器导出脚本与精度测试
+- [ ] 实现 DVAE/VQ 编码器/解码器导出脚本与精度测试
 
 ### 阶段二：MNN 转换 🔄 待开始
-- [ ] 将 ONNX 模型转换为 MNN 格式
-- [ ] 实现 FP16/INT8 量化
-- [ ] 性能优化和内存管理
-- [ ] 端侧推理脚本开发
+- [ ] 将（GPT/Conformer/BigVGAN/DVAE）ONNX 模型转换为 MNN 格式
+- [ ] 实现 FP16/INT8 量化与精度评估
+- [ ] 性能优化和内存管理（Session 复用/分段合成）
+- [ ] 桌面端 MNN 推理脚本（C++/Python 前端）
 
 ### 阶段三：Android 工程 🎯 目标
 - [ ] Android 项目结构搭建
-- [ ] JNI 接口开发
-- [ ] 文本预处理端侧实现
-- [ ] 音频生成和播放
+- [ ] JNI 接口开发（四子模块串联）
+- [ ] 文本预处理端侧实现（Tokenizer/BPE/停顿/拼音）
+- [ ] 音频生成与播放（WAV 写入器）
 - [ ] UI 界面开发
 
 ## 技术栈
 - **深度学习框架**：PyTorch → ONNX → MNN
 - **移动端平台**：Android (NDK + JNI)
-- **语音合成**：IndexTTS (GPT + Conformer + BigVGAN2)
+- **语音合成**：IndexTTS (GPT + Conformer + BigVGAN2 + DVAE)
 - **参考项目**：CosyVoice, Bert-VITS2-MNN
 
-## 下一步计划
-1. **MNN 转换**：将 4 个 ONNX 子模块转换为 MNN 格式
-2. **端侧集成**：开发串联 4 个子模块的推理脚本
-3. **性能优化**：实现量化、内存优化等移动端适配
-4. **Android 开发**：搭建完整的移动端应用
+## 下一步计划（短期）
+1. **BigVGAN 导出与精度测试**：导出 `bigvgan_generator.onnx` 并对齐 Mel 合成精度
+2. **DVAE/VQ 导出与精度测试**：导出 `dvae.onnx`（或编码/解码子图）
+3. **ONNX → MNN 转换**：生成 FP32/FP16/INT8 多版本并做一致性测试
+4. **端侧集成样例**：提供四子模块串联推理的示例脚本
 
 ## 文件结构
 ```
@@ -96,7 +98,7 @@ MobSC/
 │   ├── export_onnx/              # ONNX 导出脚本
 │   │   ├── export_*.py           # 各子模块导出脚本
 │   │   └── test_*.py             # 精度测试脚本
-│   └── checkpoints_onnx/         # 导出的 ONNX 模型
+│   └── checkpoints_onnx/         # 已导出的 ONNX 模型（当前）
 │       ├── text_embed.onnx       # 62M
 │       ├── gpt_core.onnx         # 1.8G
 │       ├── lm_head.onnx          # 41M
@@ -107,4 +109,4 @@ MobSC/
 
 ---
 *最后更新：2024年9月17日*
-*提交：e4a8e99 - feat: 实现 IndexTTS GPT 模型子模块化 ONNX 导出*
+*提交：2bbeca8 - docs: 更新项目状态报告 - 9月17日 ONNX 子模块化导出完成*
