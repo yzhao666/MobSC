@@ -3,6 +3,8 @@ import os
 from typing import Tuple
 
 import torch
+import numpy as np
+import onnxruntime as ort
 
 try:
     # 作为包运行: python -m export_onnx.export_text_embed
@@ -40,6 +42,7 @@ def main():
     parser.add_argument("--out", type=str, default="checkpoints_onnx/text_embed.onnx",
                         help="Output ONNX path")
     parser.add_argument("--opset", type=int, default=18)
+    parser.add_argument("--no-test", action="store_true", help="导出后跳过快速精度测试")
     parser.add_argument("--seed", type=int, default=1234)
     args = parser.parse_args()
 
@@ -93,6 +96,22 @@ def main():
 
     verify_onnx(args.out)
     print(f"[OK] Exported Text Embedding ONNX to {args.out}")
+
+    # Quick accuracy test
+    if not args.no_test:
+        try:
+            sess = ort.InferenceSession(args.out, providers=['CPUExecutionProvider'])
+            onnx_out = sess.run(None, {
+                "text_tokens": text_tokens.detach().cpu().numpy(),
+                "pos_indices": pos_indices.detach().cpu().numpy(),
+            })[0]
+            with torch.no_grad():
+                pt_out = wrapper(text_tokens, pos_indices).detach().cpu().numpy()
+            max_diff = float(np.max(np.abs(pt_out - onnx_out)))
+            mean_diff = float(np.mean(np.abs(pt_out - onnx_out)))
+            print(f"[TEST] text_embed.onnx 精度: max={max_diff:.2e}, mean={mean_diff:.2e}")
+        except Exception as e:
+            print(f"[TEST] text_embed.onnx 精度测试失败: {e}")
 
 
 if __name__ == "__main__":

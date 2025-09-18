@@ -1,6 +1,8 @@
 import argparse
 import os
 import torch
+import numpy as np
+import onnxruntime as ort
 
 try:
     from .common import set_seed, get_device, verify_onnx
@@ -35,6 +37,7 @@ def main():
     parser.add_argument("--config", type=str, default="checkpoints/config.yaml")
     parser.add_argument("--out", type=str, default="checkpoints_onnx/gpt_core.onnx")
     parser.add_argument("--opset", type=int, default=18)
+    parser.add_argument("--no-test", action="store_true", help="导出后跳过快速精度测试")
     parser.add_argument("--seed", type=int, default=1234)
     args = parser.parse_args()
 
@@ -83,6 +86,18 @@ def main():
 
     verify_onnx(args.out)
     print(f"[OK] Exported GPT Core ONNX to {args.out}")
+
+    if not args.no_test:
+        try:
+            sess = ort.InferenceSession(args.out, providers=['CPUExecutionProvider'])
+            onnx_out = sess.run(None, {"inputs_embeds": inputs_embeds.detach().cpu().numpy()})[0]
+            with torch.no_grad():
+                pt_out = wrapper(inputs_embeds).detach().cpu().numpy()
+            max_diff = float(np.max(np.abs(pt_out - onnx_out)))
+            mean_diff = float(np.mean(np.abs(pt_out - onnx_out)))
+            print(f"[TEST] gpt_core.onnx 精度: max={max_diff:.2e}, mean={mean_diff:.2e}")
+        except Exception as e:
+            print(f"[TEST] gpt_core.onnx 精度测试失败: {e}")
 
 
 if __name__ == "__main__":
