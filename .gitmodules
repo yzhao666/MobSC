@@ -4,3 +4,6 @@
 [submodule "Bert-VITS2-MNN"]
 	path = Bert-VITS2-MNN
 	url = https://github.com/Voine/Bert-VITS2-MNN
+[submodule "CosyVoice"]
+	path = CosyVoice
+	url = https://github.com/FunAudioLLM/CosyVoice

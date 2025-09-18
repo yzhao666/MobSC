@@ -25,11 +25,9 @@ def verify_onnx(path: str) -> bool:
     """验证 ONNX 模型并返回验证结果"""
     try:
         import onnx
-        model = onnx.load(path)
-        onnx.checker.check_model(model)
+        # 直接基于文件路径进行校验，避免将 >2GB 的模型一次性读入内存
+        onnx.checker.check_model(path)
         print(f">> ONNX 模型验证通过: {path}")
-        print(f">> 模型输入: {[input.name for input in model.graph.input]}")
-        print(f">> 模型输出: {[output.name for output in model.graph.output]}")
         return True
     except Exception as e:
         print(f">> ONNX 模型验证失败: {path}")

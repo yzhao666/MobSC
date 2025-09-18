@@ -78,6 +78,11 @@ def main():
                        help="Use new torch.export instead of legacy ONNX export")
     parser.add_argument("--minimal-export", action="store_true", 
                        help="Use minimal export with smallest possible inputs")
+    # 子模块导出控制，参考 CosyVoice 按子图导出，避免产生外部数据文件
+    parser.add_argument("--component", type=str, default="full", choices=["full", "gpt_block", "lm_head"],
+                       help="选择导出子组件：full(兼容原逻辑)、gpt_block(单个Transformer Block)、lm_head(最终Norm+Head)")
+    parser.add_argument("--block-index", type=int, default=0, 
+                       help="当 --component=gpt_block 时，指定导出的 Block 索引")
     args = parser.parse_args()
 
     set_seed(args.seed)
@@ -131,6 +136,7 @@ def main():
     if args.precision == "fp16":
         speech_conditioning_mel = speech_conditioning_mel.half()
 
+    # 根据导出组件配置输入输出命名
     input_names = ["speech_conditioning_mel", "text_tokens", "cond_mel_lengths"]
     output_names = ["logits"]
     dynamic_axes = {
@@ -172,7 +178,71 @@ def main():
                 # 只返回最后一个token的logits，模拟单步生成
                 return logits[:, -1:, :]  # (batch, 1, vocab_size)
     
-    wrapped_model = GPTWrapper(model)
+    # 按组件导出：full（默认）、gpt_block（单层Transformer Block）、lm_head（最终Norm+Head）
+    if args.component == "gpt_block":
+        # 导出单个 GPT Block，输入 hidden_states 和 attention_mask
+        gpt_block = model.gpt.h[args.block_index]
+
+        class BlockWrapper(torch.nn.Module):
+            def __init__(self, block_module):
+                super().__init__()
+                self.block = block_module
+
+            def forward(self, hidden_states, attention_mask):
+                outputs = self.block(hidden_states, layer_past=None, attention_mask=attention_mask, use_cache=False)
+                # HF GPT2 block returns (hidden_states, present, attn_weights?) — 取第一个
+                if isinstance(outputs, (tuple, list)):
+                    return outputs[0]
+                return outputs
+
+        # 构造 dummy 输入（与模型维度对齐）
+        seq_len = text_len + mel_frames + 2
+        dim = model.model_dim
+        hidden_states = torch.randn(1, seq_len, dim, device=device, dtype=torch.float32 if args.precision == "fp32" else torch.float16)
+        # attention_mask 采用 [1,1,seq_len,seq_len] 的下三角掩码（简化导出）
+        attn_mask = torch.ones(1, 1, seq_len, seq_len, device=device)
+        tril = torch.tril(torch.ones(seq_len, seq_len, device=device))
+        attn_mask[:, :, :, :] = tril
+
+        wrapped_model = BlockWrapper(gpt_block).to(device).eval()
+        export_inputs = (hidden_states, attn_mask)
+        input_names = ["hidden_states", "attention_mask"]
+        output_names = ["hidden_states_out"]
+        dynamic_axes = {
+            "hidden_states": {0: "batch", 1: "time"},
+            "attention_mask": {0: "batch", 2: "time", 3: "time2"},
+            "hidden_states_out": {0: "batch", 1: "time"},
+        }
+        args.out = os.path.splitext(args.out)[0] + f"_block{args.block_index}.onnx"
+    elif args.component == "lm_head":
+        # 导出最终层归一化+mel_head（线性）
+        # inference_model.lm_head 已经是 nn.Sequential(norm, linear)
+        lm_head = model.inference_model.lm_head
+
+        class LMHeadWrapper(torch.nn.Module):
+            def __init__(self, head_module):
+                super().__init__()
+                self.head = head_module
+
+            def forward(self, hidden_states):
+                return self.head(hidden_states)
+
+        dim = model.model_dim
+        seq_len = text_len  # 任意时间长度
+        hidden_states = torch.randn(1, seq_len, dim, device=device, dtype=torch.float32 if args.precision == "fp32" else torch.float16)
+
+        wrapped_model = LMHeadWrapper(lm_head).to(device).eval()
+        export_inputs = (hidden_states,)
+        input_names = ["hidden_states"]
+        output_names = ["logits"]
+        dynamic_axes = {
+            "hidden_states": {0: "batch", 1: "time"},
+            "logits": {0: "batch", 1: "time", 2: "vocab"},
+        }
+        args.out = os.path.splitext(args.out)[0] + "_lm_head.onnx"
+    else:
+        wrapped_model = GPTWrapper(model)
+        export_inputs = (speech_conditioning_mel, text_tokens, cond_mel_lengths)
 
     print(">> 开始导出ONNX模型...")
     print(f">> 输入形状: speech_conditioning_mel={speech_conditioning_mel.shape}, text_tokens={text_tokens.shape}, cond_mel_lengths={cond_mel_lengths.shape}")
@@ -183,14 +253,14 @@ def main():
             # 使用新的 torch.export 方法
             exported_program = torch.export.export(
                 wrapped_model,
-                (speech_conditioning_mel, text_tokens, cond_mel_lengths),
+                export_inputs,
             )
             
             # 转换为ONNX
             from torch.onnx import export as onnx_export
             onnx_export(
                 exported_program,
-                (speech_conditioning_mel, text_tokens, cond_mel_lengths),
+                export_inputs,
                 args.out,
                 export_params=True,
                 opset_version=args.opset,
@@ -203,7 +273,7 @@ def main():
             # 回退到传统方法
             torch.onnx.export(
                 wrapped_model,
-                (speech_conditioning_mel, text_tokens, cond_mel_lengths),
+                export_inputs,
                 args.out,
                 export_params=True,
                 opset_version=args.opset,
@@ -219,8 +289,8 @@ def main():
         # 使用传统导出方法，但添加更多优化
         print(">> 使用传统 torch.onnx.export 方法...")
         torch.onnx.export(
-            wrapped_model,
-            (speech_conditioning_mel, text_tokens, cond_mel_lengths),
+                wrapped_model,
+                export_inputs,
             args.out,
             export_params=True,
             opset_version=args.opset,
